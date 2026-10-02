@@ -1,0 +1,43 @@
+# Render Blueprint for CyberStream.
+#
+# Why this file exists: with a Dockerfile at the repo root but no Blueprint,
+# Render defaults a Node service to its *native* runtime and runs `npm start`.
+# That silently ignores the image, and with it the two dependencies the app
+# cannot work without - ffmpeg's mpeg1video/libmp3lame encoders and yt-dlp.
+# The symptom is a deploy that reports success and then fails every YouTube URL:
+#
+#   {"err":"\"yt-dlp\" is not on PATH","msg":"yt-dlp unavailable"}
+#
+# Declaring `runtime: docker` removes the guesswork.
+services:
+  - type: web
+    name: cyberstream
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /api/health
+    # Matches the Dockerfile's EXPOSE. Render injects its own PORT, which the
+    # server reads from the environment, so this is only the default.
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_PRETTY
+        value: "false"
+      - key: LOG_LEVEL
+        value: info
+      - key: FFMPEG_PATH
+        value: ffmpeg
+      - key: YT_DLP_PATH
+        value: /usr/local/bin/yt-dlp
+      # ALLOWED_ORIGINS is intentionally absent. The origin guard always allows a
+      # request whose Origin matches the Host it was sent to, so the app works
+      # on its own domain, a custom domain, or a preview URL with no
+      # reconfiguration. Set it only when the frontend is hosted separately.
+      # - key: ALLOWED_ORIGINS
+      #   value: https://stream.example.com
+      # Optional hardening, left off by default:
+      # - key: STREAM_TOKEN
+      #   sync: false
+      # - key: ALLOW_DIRECT_MEDIA_URLS
+      #   value: "false"

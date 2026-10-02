@@ -124,6 +124,7 @@ class App {
       this.serverConfig = await api.config();
       this.renderQualityBadge();
       this.fillQualityOptions();
+      this.warnIfDegraded();
     } catch (err) {
       toast('Cannot reach the streaming server.', { tone: 'error' });
       this.setApiSource('error');
@@ -853,6 +854,29 @@ class App {
   setStatus(state, text) {
     this.el.statusPill.dataset.state = state;
     this.el.statusPill.querySelector('.status-pill__text').textContent = text;
+  }
+
+  /**
+   * Tells the user up front if this deployment cannot do the main thing.
+   *
+   * A server missing yt-dlp still serves the page, still accepts a paste, and
+   * only fails at resolve time - so the user is left thinking their link is
+   * broken. The server reports its capabilities in /api/config precisely so this
+   * can be said once, clearly, before they try anything.
+   */
+  warnIfDegraded() {
+    const caps = this.serverConfig?.capabilities;
+    if (!caps?.degraded) return false;
+    const reason = caps.reason ?? 'This server is missing a dependency.';
+    toast(`Streaming unavailable: ${reason}`, { tone: 'error', timeout: 12_000 });
+    // Also mark the URL bar, so the state survives the toast timing out.
+    this.setStatus('error', 'Unavailable');
+    this.el.urlbar?.classList.add('is-invalid');
+    this.el.urlInput?.setAttribute(
+      'title',
+      'This server cannot resolve YouTube URLs. Check /api/health/ready.',
+    );
+    return true;
   }
 
   /* --------------------------------------------------------- pause / ui -- */

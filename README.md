@@ -466,9 +466,10 @@ message.
 │   │   ├── catalog.js            feed / queue / history / saved
 │   │   ├── dom.js, ui.js         helpers, toasts
 │   └── vendor/jsmpeg.min.js      pinned by commit + SHA-256, no CDN
-├── test/                         199 tests, incl. real FFmpeg + real HTTP
+├── test/                         216 tests, incl. real FFmpeg + real HTTP
 ├── scripts/                      setup and diagnostics
 ├── Dockerfile                    multi-stage, non-root, healthcheck
+├── render.yaml                  Render Blueprint: pins runtime: docker
 ├── docker-compose.yml            app (+ optional Caddy TLS profile)
 └── Caddyfile                     wss:// reverse proxy, buffering disabled
 ```
@@ -590,6 +591,54 @@ The image is Debian-based with FFmpeg, yt-dlp and Node, runs as the `node` user,
 and ships a healthcheck. Size is dominated by FFmpeg's codec libraries
 (~1 GB); `--no-install-recommends` is already applied.
 
+### On Render, use the Dockerfile — not the native runtime
+
+`render.yaml` is included and selects `runtime: docker` explicitly. This matters
+more than it looks:
+
+> With a Dockerfile at the repo root but no Blueprint, Render treats a Node
+> service as a **native** service and runs `npm start`. The image is never built,
+> so the two dependencies this app cannot work without are simply absent.
+
+The deploy then reports success and fails every YouTube URL at resolve time:
+
+```
+{"err":"\"yt-dlp\" is not on PATH","msg":"yt-dlp unavailable"}
+```
+
+Direct media URLs still work, which makes the failure look selective and
+misleading. Check which runtime is actually in use by looking for the start
+command in the boot log: the image runs
+`if [ -f .env ]; then exec node --env-file=.env ...`, whereas the native runtime
+runs the `npm start` script. If you see `npm start`, the image was not used.
+
+Either deploy via the Blueprint (`render.yaml` in the repo root, "Apply" in the
+dashboard) or set **Runtime → Dockerfile** in the service settings by hand.
+
+`healthCheckPath` is `/api/health`, which is a *liveness* probe and deliberately
+returns 200 even when a dependency is missing — a monitor must not restart-loop a
+degraded build, since restarting cannot install anything. Use
+`/api/health/ready` for the honest signal: it returns **503** when FFmpeg is
+unusable or yt-dlp is missing, with a `reason`.
+
+### Verifying a deployment
+
+```bash
+curl -s https://your-host/api/health         # ok:true, degraded, canResolveYouTube
+curl -s https://your-host/api/health/ready   # 503 + reason when a dependency is missing
+```
+
+`degraded: true` with `canResolveYouTube: false` is the signature of a native
+runtime without yt-dlp. The UI shows the same warning on load, so a user is told
+before they paste a URL instead of concluding their own link is broken.
+
+No `ALLOWED_ORIGINS` is needed: the origin guard always allows a request whose
+`Origin` matches the `Host` it was sent to, so the app works on its own domain, a
+custom domain, or a per-deploy preview URL with no reconfiguration. The
+allow-list exists for the case where the frontend is hosted separately, and the
+same-origin exemption costs nothing in CSRF protection — a cross-site request
+necessarily carries a foreign `Origin`. See [Security](#security).
+
 ### Behind TLS
 
 Browsers refuse `ws://` on a secure page, so a public deployment effectively
@@ -637,7 +686,12 @@ Other measures:
   credentials, and rejection of loopback, link-local (`169.254.169.254` cloud
   metadata), private and CGNAT ranges.
 * **CSRF origin guard** — the API only answers requests whose `Origin` is
-  allow-listed. Verified: a page served from an unlisted origin gets `403`.
+  allow-listed *or* is the very origin the request was addressed to. Same-origin
+  requests cannot be forged by a cross-site page (which necessarily carries a
+  foreign `Origin`), so allowing them costs nothing and means the app works on
+  any host without configuration. The scheme is checked as well as the host, so
+  an HTTPS deployment does not accept an `http://` origin on the same name.
+  Verified: a page served from an unlisted origin gets `403`.
 * **Rate limits** on session creation (per IP, IPv6-normalised so a single
   client cannot rotate addresses within its prefix) and a global budget.
 * **Strict CSP** — no inline script, no `eval`, no CDN. JSMpeg is vendored and

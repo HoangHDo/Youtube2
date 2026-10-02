@@ -10,6 +10,11 @@ import { thumbnailFor, parseSource } from '../lib/youtube.js';
 import { parseOptions } from '../lib/parse-options.js';
 import { newViewerToken } from '../lib/ids.js';
 import { QUALITY_PRESETS, videoConfigFor } from '../lib/ffmpeg.js';
+import {
+  snapshot as snapshotCapabilities,
+  degradationReason,
+  canResolveYouTube,
+} from '../lib/capabilities.js';
 
 const log = childLogger({ mod: 'api' });
 
@@ -33,6 +38,14 @@ export function createApiRouter({ version }) {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       version,
+      // What this deployment can actually do. The client uses this to warn
+      // *before* the user pastes a URL, rather than surfacing a resolve failure
+      // that looks like a problem with their link.
+      capabilities: {
+        canResolveYouTube: canResolveYouTube(),
+        degraded: snapshotCapabilities().degraded,
+        reason: degradationReason(),
+      },
       limits: {
         maxSessionMs: config.sessions.maxDurationMs,
         maxSourceDuration: config.youtube.maxSourceDuration,
@@ -69,23 +82,38 @@ export function createApiRouter({ version }) {
 
   router.get('/health', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
+    // `ok` is liveness, deliberately independent of capability: the process is
+    // up and serving. Folding a missing dependency in here would make a
+    // platform health check restart the same broken build in a loop, which
+    // cannot fix anything. Readiness below is the signal worth alerting on.
+    const caps = snapshotCapabilities();
     res.json({
       ok: true,
       version,
       uptimeSec: Math.round(process.uptime()),
       sessions: sessionStore.size,
       memoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      degraded: caps.degraded,
+      canResolveYouTube: caps.canResolveYouTube,
     });
   });
 
-  /** Ready probe: verifies FFmpeg is actually usable, not just installed. */
+  /** Ready probe: FFmpeg usable *and* YouTube URLs resolvable. */
   router.get('/health/ready', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    const ffmpeg = config.video.ffmpegPath;
-    res.json({
-      ok: true,
-      ffmpeg: { path: ffmpeg, note: 'checked at spawn time' },
-      ytDlp: { path: config.youtube.ytDlpPath },
+    const caps = snapshotCapabilities();
+    // The status has to be set before the body is written: `res.json()` sends
+    // the headers immediately, so a following `res.status()` is a no-op and the
+    // probe would answer 200 while reporting ok:false - which is worse than not
+    // reporting at all, because an orchestrator would route traffic to a service
+    // that says it cannot serve it.
+    res.status(caps.ready ? 200 : 503).json({
+      ok: caps.ready,
+      ready: caps.ready,
+      degraded: caps.degraded,
+      reason: degradationReason(),
+      ffmpeg: { ...caps.ffmpeg, path: config.video.ffmpegPath },
+      ytDlp: { ...caps.ytDlp, path: config.youtube.ytDlpPath },
       sessions: sessionStore.size,
     });
   });

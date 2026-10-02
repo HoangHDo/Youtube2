@@ -49,9 +49,47 @@ export function securityHeaders() {
 }
 
 /**
+ * True when `origin` is the very origin the request was addressed to.
+ *
+ * CSRF works by making a *foreign* page issue a request to this server, which
+ * necessarily carries a foreign Origin. A request whose Origin matches the host
+ * it was sent to cannot be forged that way - it is same-origin - so allowing it
+ * unconditionally costs nothing in CSRF protection.
+ *
+ * That matters because hard-coding the allow-list to `localhost:8080` breaks the
+ * app the moment it is served from anywhere else: Render, Fly, a custom domain,
+ * even a LAN IP. The symptom is subtle and total - the page loads and then every
+ * asset is answered with 403, so the dashboard is blank and the console says
+ * "blocked cross-origin request" for the app's own URL.
+ *
+ * The scheme is checked as well as the host. Matching the host alone would let
+ * `http://my-host` be accepted on an HTTPS deployment, which is a downgrade path
+ * an attacker on the network path could use; behind a proxy the real scheme
+ * arrives in X-Forwarded-Proto, so honour that first.
+ */
+export function isSameOrigin(req, origin) {
+  const host = req.headers.host;
+  if (!host) return false; // no Host: nothing to compare against
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (parsed.host !== host) return false;
+
+  const forwardedProto = String(req.headers['x-forwarded-proto'] ?? '')
+    .split(',')[0]
+    .trim();
+  const scheme = forwardedProto || (req.socket?.encrypted ? 'https' : 'http');
+  return parsed.protocol === `${scheme}:`;
+}
+
+/**
  * CORS / CSRF: the API is meant to be called from our own page, so the default
- * is an origin allow-list. Requests with *no* Origin (curl, native clients) are
- * still allowed - they cannot be forged by a browser.
+ * is an origin allow-list. Same-origin requests always pass (see isSameOrigin).
+ * Requests with *no* Origin (curl, native clients) are still allowed - they
+ * cannot be forged by a browser.
  */
 export function originGuard() {
   const allowed = new Set(config.allowedOrigins);
@@ -71,14 +109,25 @@ export function originGuard() {
 
   return (req, res, next) => {
     const origin = req.headers.origin;
-    if (origin && !allowed.has(origin)) {
-      log.warn({ origin, path: req.path }, 'blocked cross-origin request');
+    if (origin && !allowed.has(origin) && !isSameOrigin(req, origin)) {
+      log.warn(
+        { origin, host: req.headers.host, path: req.path },
+        'blocked cross-origin request',
+      );
       return res.status(403).json({
         error: 'origin_not_allowed',
         message: 'This origin is not allowed to use the API.',
       });
     }
-    return corsMiddleware(req, res, next);
+
+    // Same-origin and origin-less requests need no CORS headers at all: the
+    // browser does not apply a CORS check to them. Emitting headers here would
+    // mean duplicating the same-origin rule inside `cors`, whose `origin`
+    // callback never sees the request and so cannot know the Host. Instead the
+    // header-emitting path is used only for the explicit allow-list, which is
+    // the one case where a separately hosted frontend genuinely needs it.
+    if (!origin || allowed.has(origin)) return corsMiddleware(req, res, next);
+    return next();
   };
 }
 
