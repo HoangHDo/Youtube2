@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+bin/
+tmp/
+logs/
+*.log
+coverage/
+.DS_Store
+Thumbs.db
+tmp/
+public/vendor/jsmpeg.meta.json

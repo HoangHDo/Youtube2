@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="CyberStream - stream any YouTube video to your browser in real time over WebSocket and HTTP.">
+<title>CyberStream // Tesla Dashboard Player</title>
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23ff2d46'/><path d='M18 6 9 18h6l-1 8 9-12h-6z' fill='%23fff'/></svg>">
+
+<link rel="stylesheet" href="/css/base.css">
+<link rel="stylesheet" href="/css/layout.css">
+<link rel="stylesheet" href="/css/components.css">
+</head>
+<body>
+<a class="skip-link" href="#stage">Skip to player</a>
+
+<div class="app" id="app">
+
+  <!-- ─────────────────────────  SIDEBAR  ───────────────────────── -->
+  <aside class="sidebar" id="sidebar" aria-label="Stream queue">
+    <div class="sidebar__tabs" role="tablist" aria-label="Sidebar sections">
+      <button class="tab is-active" role="tab" id="tab-queue" aria-controls="panel-queue" aria-selected="true" data-panel="queue">Queue</button>
+      <button class="tab" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false" data-panel="history">History</button>
+      <button class="tab" role="tab" id="tab-saved" aria-controls="panel-saved" aria-selected="false" data-panel="saved">Saved</button>
+    </div>
+
+    <div class="sidebar__body">
+      <section class="panel is-active" id="panel-queue" role="tabpanel" aria-labelledby="tab-queue" tabindex="0">
+        <ul class="queue" id="queue-list" aria-live="polite"></ul>
+        <div class="empty" id="queue-empty">
+          <svg class="empty__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          <p class="empty__title">Queue is empty</p>
+          <p class="empty__hint">Pick from suggested feed below</p>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-history" role="tabpanel" aria-labelledby="tab-history" tabindex="0" hidden>
+        <ul class="queue" id="history-list"></ul>
+        <div class="empty" id="history-empty">
+          <svg class="empty__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5l3 2"/><circle cx="12" cy="12" r="9"/></svg>
+          <p class="empty__title">No history yet</p>
+          <p class="empty__hint">Streams you start show up here</p>
+        </div>
+        <button class="btn btn--ghost btn--block" id="history-clear" type="button">Clear history</button>
+      </section>
+
+      <section class="panel" id="panel-saved" role="tabpanel" aria-labelledby="tab-saved" tabindex="0" hidden>
+        <ul class="queue" id="saved-list"></ul>
+        <div class="empty" id="saved-empty">
+          <svg class="empty__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg>
+          <p class="empty__title">Nothing saved</p>
+          <p class="empty__hint">Use the bookmark on any card</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="sidebar__foot">
+      <div class="search">
+        <svg class="search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input type="search" id="catalog-search" placeholder="Search catalog..." aria-label="Search the catalog" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="api-line">
+        <span class="api-line__label">API:</span>
+        <span class="api-line__value" id="api-source">Local</span>
+        <button class="linkbtn" id="api-configure" type="button">Configure</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ─────────────────────────  MAIN  ───────────────────────── -->
+  <div class="main">
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>
+        </span>
+        <span class="brand__text">
+          <span class="brand__name">CYBER<em>STREAM</em></span>
+          <span class="brand__sub">TESLA DASHBOARD PLAYER</span>
+        </span>
+      </div>
+
+      <span class="status-pill" id="status-pill" data-state="ready" role="status" aria-live="polite">
+        <span class="status-pill__dot" aria-hidden="true"></span>
+        <span class="status-pill__text">Ready</span>
+      </span>
+
+      <form class="urlbar" id="url-form" role="search" novalidate>
+        <svg class="urlbar__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></svg>
+        <input type="text" id="url-input" name="url" placeholder="Paste YouTube URL or video ID..."
+               aria-label="YouTube URL or video ID" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go">
+        <button class="urlbar__paste" id="paste-btn" type="button" aria-label="Paste from clipboard" title="Paste from clipboard">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6v3H9z"/><path d="M9 5.5H7.5A1.5 1.5 0 0 0 6 7v12.5A1.5 1.5 0 0 0 7.5 21h9a1.5 1.5 0 0 0 1.5-1.5V7a1.5 1.5 0 0 0-1.5-1.5H15"/></svg>
+          <span class="urlbar__paste-label">Paste</span>
+        </button>
+        <button class="btn btn--primary urlbar__go" id="load-btn" type="submit">
+          <span class="urlbar__go-label">Load</span>
+        </button>
+      </form>
+
+      <div class="topbar__actions">
+        <button class="iconbtn" id="settings-btn" type="button" aria-label="Settings" aria-haspopup="dialog">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>
+        </button>
+        <button class="iconbtn" id="fullscreen-btn" type="button" aria-label="Toggle fullscreen">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="stage" id="stage" tabindex="-1">
+      <!-- JSMpeg renders here -->
+      <div class="video-wrap" id="video-wrap">
+        <canvas id="video-canvas" width="1280" height="720" aria-label="Video output"></canvas>
+
+        <div class="overlay" id="overlay" data-mode="nosignal">
+          <div class="overlay__play" id="overlay-play" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </div>
+          <h2 class="overlay__title" id="overlay-title">No Signal</h2>
+          <p class="overlay__sub" id="overlay-sub">Paste a YouTube URL above or pick a video below to start.</p>
+          <div class="overlay__actions" id="overlay-actions">
+            <button class="btn btn--primary" id="demo-btn" type="button">Try demo</button>
+            <button class="btn btn--ghost" id="overlay-paste" type="button">Paste URL</button>
+          </div>
+
+          <div class="spinner" id="spinner" hidden>
+            <svg viewBox="0 0 50 50" aria-hidden="true"><circle cx="25" cy="25" r="20" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-dasharray="90 150"/></svg>
+            <span id="spinner-text">Starting stream…</span>
+          </div>
+
+          <div class="meter" id="meter" hidden>
+            <div class="meter__row"><span>Buffer</span><span id="meter-buffer">—</span></div>
+            <div class="meter__bar"><i id="meter-bar-fill"></i></div>
+            <div class="meter__row"><span>Latency</span><span id="meter-latency">—</span></div>
+          </div>
+
+          <button class="btn btn--danger btn--lg" id="overlay-stop" type="button" hidden>Stop stream</button>
+        </div>
+
+        <div class="badge-quality" id="quality-badge" hidden></div>
+      </div>
+
+      <!-- Transport -->
+      <div class="transport" id="transport">
+        <div class="transport__meta">
+          <strong class="transport__title" id="now-title">— No video loaded —</strong>
+          <span class="transport__sub" id="now-sub">Ready to play</span>
+        </div>
+
+        <div class="transport__controls" role="group" aria-label="Playback controls">
+          <button class="tbtn" id="pause-btn" type="button" aria-label="Pause" aria-pressed="false">
+            <svg class="tbtn__icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg>
+            <svg class="tbtn__icon-play" viewBox="0 0 24 24" aria-hidden="true" hidden><path d="M8 5v14l11-7z"/></svg>
+          </button>
+          <button class="tbtn" id="mute-video" type="button" aria-label="Mute audio" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="m22 9-6 6M16 9l6 6"/></svg>
+          </button>
+          <button class="tbtn tbtn--accent" id="restart-btn" type="button" aria-label="Restart both streams">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 3v5h-5"/></svg>
+          </button>
+          <button class="tbtn" id="skip-back" type="button" aria-label="Rejoin the live audio edge">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M17 5v14M21 5v14"/></svg>
+          </button>
+          <button class="tbtn" id="resync-btn" type="button" aria-label="Resynchronise audio and video">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h8M4 8h8M4 16h5"/><path d="M14 8v8M18 6v12"/></svg>
+          </button>
+          <button class="tbtn" id="fullscreen-video-btn" type="button" aria-label="Play video full screen" aria-pressed="false">
+            <svg class="tbtn__icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+            <svg class="tbtn__icon-collapse" viewBox="0 0 24 24" aria-hidden="true" hidden><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
+          </button>
+          <button class="tbtn" id="picture-btn" type="button" aria-label="Toggle picture in picture">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="5" rx="1"/></svg>
+          </button>
+          <button class="tbtn" id="link-btn" type="button" aria-label="Copy share link">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></svg>
+          </button>
+        </div>
+
+        <!-- MP3 audio, as required: a plain <audio controls> element -->
+        <div class="audiodek" id="audiodek">
+          <audio id="audio-el" controls preload="none" crossorigin="anonymous"></audio>
+          <span class="audiodek__state" id="audio-state" hidden></span>
+        </div>
+      </div>
+
+      <!-- Suggested feed -->
+      <section class="feed" aria-labelledby="feed-title">
+        <div class="feed__head">
+          <h2 class="feed__title" id="feed-title">Suggested feed</h2>
+          <span class="feed__meta">Curated</span>
+        </div>
+        <ul class="feed__rail" id="feed-rail"></ul>
+      </section>
+    </main>
+  </div>
+</div>
+
+<!-- ─────────────────────────  DIALOGS  ───────────────────────── -->
+
+<dialog class="modal" id="settings-dialog" aria-labelledby="settings-title">
+  <form method="dialog" class="modal__inner">
+    <h2 id="settings-title" class="modal__title">Settings</h2>
+
+    <div class="field">
+      <label for="set-quality">Video quality</label>
+      <select id="set-quality"></select>
+      <p class="field__hint">
+        JSMpeg decodes MPEG-1 in JavaScript, so resolution is the main driver of
+        smoothness. Applies to the next stream you start.
+      </p>
+    </div>
+
+    <div class="field">
+      <label for="set-sync">A/V sync correction</label>
+      <select id="set-sync">
+        <option value="on" selected>Enabled &mdash; nudge audio rate to match video</option>
+        <option value="off">Disabled</option>
+      </select>
+    </div>
+
+    <div class="field field--row">
+      <label class="switch">
+        <input type="checkbox" id="set-autoplay" checked>
+        <span>Autoplay on start</span>
+      </label>
+    </div>
+
+    <div class="field field--row">
+      <label class="switch">
+        <input type="checkbox" id="set-remember">
+        <span>Remember history in this browser</span>
+      </label>
+    </div>
+
+    <div class="modal__foot">
+      <button class="btn btn--ghost" value="cancel" type="submit">Close</button>
+      <button class="btn btn--primary" id="settings-save" value="save" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="modal" id="api-dialog" aria-labelledby="api-title">
+  <form method="dialog" class="modal__inner">
+    <h2 id="api-title" class="modal__title">API endpoint</h2>
+    <div class="field">
+      <label for="api-input">Server URL</label>
+      <input type="url" id="api-input" placeholder="https://stream.example.com" spellcheck="false">
+      <p class="field__hint">
+        Point the dashboard at another CyberStream deployment. The endpoint must allow
+        this page's origin and serve the same API.
+      </p>
+    </div>
+    <div class="modal__foot">
+      <button class="btn btn--ghost" id="api-reset" value="reset" type="submit">Reset</button>
+      <button class="btn btn--primary" value="save" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toaster" id="toaster" aria-live="polite" aria-atomic="false"></div>
+
+<!-- Vendored, pinned by SHA-256 (no CDN at runtime) -->
+<script src="/vendor/jsmpeg.min.js"></script>
+<script src="/control/socket.io.js"></script>
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

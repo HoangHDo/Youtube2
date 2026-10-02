@@ -1,0 +1,92 @@
+# =============================================================================
+# CyberStream - local deployment
+#
+#   docker compose up --build              # app only, on http://localhost:8080
+#   docker compose --profile tls up --build   # app + Caddy, TLS on :443
+#
+# The `tls` profile terminates HTTPS so the browser gets wss:// for the video
+# WebSocket. Browsers refuse ws:// from a secure page, so a public deployment
+# effectively requires it.
+# =============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cyberstream:1.0.0
+    container_name: cyberstream
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_PRETTY: "false"
+
+      # Who may call the API. With a reverse proxy in front, list its origin.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+
+      # Encoder tuning
+      VIDEO_WIDTH: ${VIDEO_WIDTH:-1280}
+      VIDEO_HEIGHT: ${VIDEO_HEIGHT:-720}
+      VIDEO_FPS: ${VIDEO_FPS:-25}
+      VIDEO_Q: ${VIDEO_Q:-5}
+      GOP: ${GOP:-12}
+      MUX_DELAY: ${MUX_DELAY:-0.1}
+      AUDIO_BITRATE: ${AUDIO_BITRATE:-128k}
+
+      # Sessions
+      MAX_SESSIONS: ${MAX_SESSIONS:-8}
+      MAX_SESSION_MS: ${MAX_SESSION_MS:-7200000}
+      ORPHAN_GRACE_MS: ${ORPHAN_GRACE_MS:-30000}
+      RATE_LIMIT_CREATE_PER_MIN: ${RATE_LIMIT_CREATE_PER_MIN:-10}
+
+      # An extra server-wide key on every stream endpoint. Not authentication.
+      STREAM_TOKEN: ${STREAM_TOKEN:-}
+    # Each session is an FFmpeg process: give the container room to breathe.
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2g
+    shm_size: "128mb"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------- TLS proxy
+  caddy:
+    image: caddy:2-alpine
+    container_name: cyberstream-caddy
+    profiles: ["tls"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:

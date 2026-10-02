@@ -1,0 +1,70 @@
+# =============================================================================
+# Caddy reverse proxy for CyberStream.
+#
+# Why a proxy at all:
+#   * browsers refuse ws:// on an HTTPS page, so the video WebSocket must be
+#     wss:// in any real deployment
+#   * a proxy is the natural place to put real authentication
+#   * nginx/Caddy buffering would destroy a live stream, so buffering is off
+#
+# Set SITE_ADDRESS to your hostname to get automatic Let's Encrypt certificates:
+#   docker compose --profile tls up -d
+# =============================================================================
+
+{
+	# Uncomment to serve an internal certificate instead of hitting Let's Encrypt.
+	# email you@example.com
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# ---------------------------------------------------------------------
+	# The live streams must never be buffered, compressed or cached.
+	# ---------------------------------------------------------------------
+	@stream path /ws/video* /api/stream/*
+
+	handle @stream {
+		reverse_proxy app:8080 {
+			# Pass the WebSocket upgrade through untouched.
+			header_up Connection {>Connection}
+			header_up Upgrade {>Upgrade}
+
+			# Media is already compressed; buffering it would add seconds of
+			# latency and defeat the whole point.
+			flush_interval -1
+			transport http {
+				read_timeout 24h
+				write_timeout 24h
+			}
+		}
+	}
+
+	# ---------------------------------------------------------------------
+	# API + dashboard
+	# ---------------------------------------------------------------------
+	handle {
+		reverse_proxy app:8080 {
+			header_up X-Forwarded-Proto {header.X-Forwarded-Proto}
+			header_up X-Real-IP {header.X-Real-IP}
+		}
+	}
+
+	# ---------------------------------------------------------------------
+	# Optional authentication. CyberStream's per-session tokens are a
+	# capability, NOT an identity system: anyone holding a session id and its
+	# token can watch that stream. Put a real auth layer in front if the server
+	# is not meant to be open to the internet.
+	#
+	#   basicauth {
+	#       admin $2a$14$...   # htpasswd -B
+	#   }
+	#
+	# The dashboard's own origin allow-list (ALLOWED_ORIGINS) must include the
+	# public origin once TLS is in front of it.
+	# ---------------------------------------------------------------------
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+}

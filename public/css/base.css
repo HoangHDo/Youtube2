@@ -1,0 +1,172 @@
+/* ==========================================================================
+   CyberStream - design tokens + reset
+   Dark, instrument-cluster inspired. Red accent, near-black surfaces.
+   ========================================================================== */
+
+:root {
+  /* surfaces */
+  --bg:            #0a0a0c;
+  --bg-1:          #101014;
+  --bg-2:          #16161b;
+  --bg-3:          #1d1d24;
+  --bg-4:          #26262f;
+  --line:          #2a2a33;
+  --line-soft:     #1f1f26;
+
+  /* text */
+  --fg:            #eceef2;
+  --fg-2:          #a2a6b0;
+  --fg-3:          #6e7280;
+  --fg-inverse:    #0a0a0c;
+
+  /* accent */
+  --accent:        #ff2d46;
+  --accent-hot:    #ff5566;
+  --accent-deep:   #c8102e;
+  --accent-soft:   rgba(255, 45, 70, 0.14);
+  --accent-glow:   0 0 0 1px rgba(255, 45, 70, 0.5), 0 0 24px rgba(255, 45, 70, 0.35);
+
+  /* semantic */
+  --ok:            #22d38a;
+  --warn:          #ffb020;
+  --info:          #4aa8ff;
+
+  /* geometry */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-pill: 999px;
+
+  --sidebar-w: 280px;
+  --topbar-h: 60px;
+
+  /* elevation */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 18px 48px rgba(0, 0, 0, 0.6);
+
+  /* motion */
+  --t-fast: 120ms;
+  --t-base: 200ms;
+  --t-slow: 420ms;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* type */
+  --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, Inter, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  --shadow-accent-text: 0 0 18px rgba(255, 45, 70, 0.45);
+}
+
+/* Light theme (opt-in; the dashboard defaults to dark) */
+[data-theme='light'] {
+  --bg:           #f4f5f7;
+  --bg-1:         #ffffff;
+  --bg-2:         #fafbfc;
+  --bg-3:         #eef0f3;
+  --bg-4:         #e2e5ea;
+  --line:         #d8dce3;
+  --line-soft:    #e6e9ee;
+  --fg:           #14161a;
+  --fg-2:         #4c525d;
+  --fg-3:         #7b828e;
+  --accent-soft:  rgba(255, 45, 70, 0.1);
+  --shadow-2:     0 4px 16px rgba(20, 22, 26, 0.1);
+  --shadow-3:     0 18px 48px rgba(20, 22, 26, 0.16);
+}
+
+/* --------------------------------------------------------------- reset -- */
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(255, 45, 70, 0.07), transparent 60%),
+    var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+h1, h2, h3, p, ul, ol, figure { margin: 0; }
+ul, ol { padding: 0; list-style: none; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: 0; }
+img, canvas, video, audio { display: block; max-width: 100%; }
+svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+svg :where(path[d^='M'], rect[fill='none'], circle[fill='none']) { vector-effect: non-scaling-stroke; }
+
+a { color: var(--accent-hot); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+:focus:not(:focus-visible) { outline: none; }
+
+::selection { background: var(--accent); color: #fff; }
+
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--r-sm);
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(-200%);
+  transition: transform var(--t-base) var(--ease);
+}
+.skip-link:focus { transform: translateY(0); }
+
+/* scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--bg-4) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: var(--r-pill); border: 2px solid var(--bg); }
+*::-webkit-scrollbar-thumb:hover { background: #3a3a45; }
+
+/* ------------------------------------------------------------ utilities -- */
+[hidden] { display: none !important; }
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.linkbtn {
+  color: var(--accent-hot);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 4px;
+  border-radius: var(--r-sm);
+}
+.linkbtn:hover { text-decoration: underline; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
