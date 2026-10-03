@@ -14,6 +14,10 @@ import { startReaper, shutdownAll, sessionStore } from './lib/session-store.js';
 import { purgeResolveTemp } from './lib/resolver.js';
 import { probeFfmpeg, probeYtDlp } from './lib/doctor.js';
 import { recordProbe, degradationReason } from './lib/capabilities.js';
+import {
+  resolveYtDlpBinary as bootstrapYtDlp,
+  activeYtDlpPath,
+} from './lib/ytdlp-bootstrap.js';
 import { reapOrphans, pruneForeignStateFiles, pruneStaleSessionDirs } from './lib/orphan-reaper.js';
 import { VERSION } from './version.js';
 
@@ -46,10 +50,17 @@ export async function start() {
     logger.error({ err: ffmpeg.error }, 'ffmpeg is not usable - streams will fail');
   }
 
+  // Last chance to obtain yt-dlp before anything depends on it. A no-op unless
+  // YT_DLP_BOOTSTRAP=1, which is the escape hatch for hosts that run their own
+  // runtime instead of building the Dockerfile (Render does this by default).
+  await bootstrapYtDlp().catch((err) => {
+    logger.error({ err: err.message }, 'yt-dlp bootstrap failed');
+  });
+
   const ytDlp = await probeYtDlp();
   recordProbe('ytDlp', ytDlp);
   if (ytDlp.ok) {
-    logger.info({ version: ytDlp.version, path: config.youtube.ytDlpPath }, 'yt-dlp ready');
+    logger.info({ version: ytDlp.version, path: activeYtDlpPath() }, 'yt-dlp ready');
   } else {
     // Not fatal for direct media URLs, but it removes the primary feature
     // entirely. This is reported through /health and the UI rather than left as
@@ -85,7 +96,7 @@ export async function start() {
       node: process.version,
       env: config.env,
       ffmpeg: config.video.ffmpegPath,
-      ytDlp: config.youtube.ytDlpPath,
+      ytDlp: activeYtDlpPath(),
     },
     'cyberstream listening',
   );

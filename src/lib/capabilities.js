@@ -28,6 +28,25 @@ const state = {
 };
 
 /**
+ * Is this process running from the bundled Docker image?
+ *
+ * The image sets `CYBERSTREAM_IMAGE=1`; nothing else does. That makes the one
+ * overwhelmingly common cause of a missing dependency *detectable from the
+ * inside* rather than guessable from the outside.
+ *
+ * The failure it explains: a host such as Render defaults a Node service to its
+ * own native runtime and runs `npm start`, so the image is never built and
+ * yt-dlp is simply not installed. The deploy reports success, the app serves
+ * pages, and every YouTube URL fails at resolve time - which reads like a broken
+ * link rather than a deployment mistake.
+ *
+ * @returns {boolean}
+ */
+export function inBundledImage() {
+  return process.env.CYBERSTREAM_IMAGE === '1';
+}
+
+/**
  * Records a probe result.
  * @param {'ffmpeg'|'ytDlp'} name
  * @param {{ok:boolean, version?:string, error?:string}} result
@@ -53,7 +72,7 @@ export function canResolveYouTube() {
   return state.ytDlp.ok === true;
 }
 
-/** @returns {{ffmpeg:object, ytDlp:object, canResolveYouTube:boolean, ready:boolean}} */
+/** @returns {{ffmpeg:object, ytDlp:object, canResolveYouTube:boolean, ready:boolean, degraded:boolean}} */
 export function snapshot() {
   const canResolve = canResolveYouTube();
   return {
@@ -62,9 +81,15 @@ export function snapshot() {
     canResolveYouTube: canResolve,
     // Ready means: able to serve the primary use case. A deployment with no
     // yt-dlp can still stream direct media URLs, which is why this is separate
-    // from liveness rather than folded into it.
+    // from liveness rather than folded into it. Unprobed counts as not ready,
+    // since readiness is a claim about capability and nothing has been shown yet.
     ready: state.ffmpeg.ok && canResolve,
-    degraded: state.ffmpeg.checked && (!state.ffmpeg.ok || !canResolve),
+    // Degraded means: something we *checked* is broken. Not the same as
+    // "not ready" - an unprobed deployment is not yet known to be degraded, and
+    // a missing yt-dlp on its own must not be masked by an unprobed ffmpeg.
+    degraded:
+      (state.ffmpeg.checked && !state.ffmpeg.ok)
+      || (state.ytDlp.checked && !state.ytDlp.ok),
   };
 }
 
@@ -81,6 +106,21 @@ export function degradationReason() {
     parts.push(
       'yt-dlp is missing (every YouTube URL will fail to resolve; direct media URLs still work)',
     );
+    // Say *why* it is missing when we can tell, because "install yt-dlp" is the
+    // wrong instruction for someone who already has a Dockerfile that bundles
+    // it and simply is not running it.
+    if (!inBundledImage()) {
+      parts.push(
+        'this process is not running from the bundled Docker image (CYBERSTREAM_IMAGE is unset), ' +
+          'so the host is probably using its own native runtime and never installed yt-dlp - ' +
+          'deploy the Dockerfile, or set Runtime to Dockerfile on the service',
+      );
+    } else {
+      parts.push(
+        'this is the bundled image, so yt-dlp should already be present - ' +
+          'the image may be stale, or YT_DLP_PATH may be pointing somewhere wrong',
+      );
+    }
   }
   return parts.length ? parts.join('; ') : null;
 }

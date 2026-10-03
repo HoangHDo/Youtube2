@@ -16,12 +16,38 @@ import { childLogger } from './logger.js';
 import { SOURCE_KIND, parseSource } from './youtube.js';
 import { parseOptions } from './parse-options.js';
 import { redactUrls } from './redact.js';
+import { inBundledImage } from './capabilities.js';
+import { activeYtDlpPath } from './ytdlp-bootstrap.js';
 
 const log = childLogger({ mod: 'resolver' });
 
 const RESOLVE_TIMEOUT_MS = 45_000;
 const MAX_STDERR = 16 * 1024;
 const RESOLVE_TMP_ROOT = join(tmpdir(), 'cyberstream-resolve');
+
+/**
+ * The message shown when yt-dlp cannot be executed.
+ *
+ * "yt-dlp is not installed on this server (set YT_DLP_PATH)" is true but not
+ * actionable for the common case, where the operator *has* a Dockerfile that
+ * installs yt-dlp and the host simply is not running it - Render defaults a Node
+ * service to its own native runtime and runs `npm start`, so the image is never
+ * built. The deploy then succeeds, the dashboard loads, and every YouTube URL
+ * fails here, which reads like the user's own link is broken.
+ *
+ * So the message names the likely cause when the process can tell that it is not
+ * running from the bundled image.
+ */
+function ytDlpMissingMessage() {
+  if (inBundledImage()) {
+    return 'yt-dlp is missing even though the bundled image should contain it - '
+      + 'the image may be stale, or YT_DLP_PATH may be wrong.';
+  }
+  return 'yt-dlp is not installed on this server. This process is not running from the '
+    + 'bundled Docker image, so the host is using its own runtime and never installed it: '
+    + 'deploy the Dockerfile (or set the service runtime to Dockerfile). '
+    + 'Direct media URLs still work.';
+}
 
 export class ResolveError extends Error {
   constructor(message, { code = 'RESOLVE_FAILED', statusCode = 422 } = {}) {
@@ -74,9 +100,14 @@ const DEFAULT_FORMAT =
  * consumer is done; releasing is what allows merged temp files to be reclaimed.
  *
  * @param {unknown} rawInput
+ * @param {{forceRefresh?: boolean}} [opts] `forceRefresh` skips both the settled
+ *   cache and the in-flight de-duplication. This is not an optimisation knob: a
+ *   rejected media link has to be resolved *again* from scratch, and serving the
+ *   cached entry would hand back the identical URL that was just refused, which
+ *   would turn the retry into a no-op that looks like it worked.
  * @returns {Promise<object>} resolved source (has `.release()`)
  */
-export async function acquireSource(rawInput) {
+export async function acquireSource(rawInput, { forceRefresh = false } = {}) {
   const parsed = parseSource(rawInput, parseOptions());
 
   if (parsed.kind === SOURCE_KIND.DIRECT) {
@@ -96,11 +127,14 @@ export async function acquireSource(rawInput) {
 
   const key = parsed.url;
   const cached = cache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
     cached.refs += 1;
     return decorate(cached, key);
   }
+  // A forced refresh also has to drop the in-flight entry, or it would join the
+  // very request it is meant to replace.
   if (cached) await releaseEntry(key, cached);
+  if (forceRefresh) inflightMap.delete(key);
 
   if (!inflightMap.has(key)) {
     const pending = resolveYouTube(parsed)
@@ -175,11 +209,57 @@ export async function purgeResolveTemp() {
   await rm(RESOLVE_TMP_ROOT, { recursive: true, force: true }).catch(() => {});
 }
 
+/**
+ * Does this failure look like YouTube refusing the *server*, not the video?
+ *
+ * On a datacenter IP - which is what a Render service is - YouTube's anonymous
+ * clients get a bot check and no player response comes back at all. The video
+ * is fine and will play in a browser; the address is the problem. Recognising
+ * this is what lets the app retry with a different client instead of reporting
+ * a dead link, and what stops it blaming the user's video.
+ */
+export function looksLikeIpBlock(text) {
+  return /failed to extract any player response|unable to extract (player|webpage|initial data|any data)|the page needs to be reloaded|not a bot|sign in to confirm|po token|confirm you'?re not a bot/.test(
+    `${text}`.toLowerCase(),
+  );
+}
+
+/**
+ * Player clients to try, in order, when the default ones are blocked.
+ *
+ * These are the InnerTube clients that historically tolerate anonymous requests
+ * from server addresses, which is exactly the case the default `web` client
+ * refuses. Ordered by how likely they are to work rather than by quality.
+ *
+ * Only consulted when the operator has not pinned `YT_DLP_CLIENTS`: an explicit
+ * choice should not be second-guessed with surprise retries.
+ */
+const FALLBACK_CLIENTS = ['tv', 'web_safari', 'android_vr', 'tv_simply'];
+
 async function resolveYouTube(source) {
-  const args = buildYtDlpArgs(source);
   const started = Date.now();
 
-  const { stdout, stderr, code, signal } = await runYtDlp(args);
+  const clients = config.youtube.clients
+    ? [null] // pinned: use it exactly, and fail loudly if it does not work
+    : [null, ...FALLBACK_CLIENTS];
+
+  let last = null;
+  for (const client of clients) {
+    const { stdout, stderr, code } = await runYtDlp(buildYtDlpArgs(source, client));
+    if (code === 0 && stdout.trim()) {
+      if (client) {
+        log.info({ client }, 'resolved after the default player clients were blocked');
+      }
+      last = { stdout, stderr, code };
+      break;
+    }
+    last = { stdout, stderr, code };
+    // Only a bot check is worth another process; a private or deleted video
+    // will fail identically on every client.
+    if (!looksLikeIpBlock(stderr)) break;
+  }
+
+  const { stdout, stderr, code } = last;
 
   if (code !== 0 || !stdout.trim()) {
     const reason = translateError(stderr, stdout);
@@ -308,13 +388,12 @@ function sanitiseHeaders(headers) {
   return out;
 }
 
-function buildYtDlpArgs(source) {
+export function buildYtDlpArgs(source, client) {
   const args = [
     '--no-warnings',
     '--no-playlist',
     '--no-progress',
     '--ignore-config',
-    '--no-call-home',
     '--socket-timeout',
     '20',
     '--retries',
@@ -325,10 +404,18 @@ function buildYtDlpArgs(source) {
     '--no-download',
   ];
 
+  // `--no-call-home` used to be here. It is deprecated, and yt-dlp now prints a
+  // four-line "Deprecated Feature" banner on *every* resolve, which buried the
+  // actual error in noise on exactly the failures that needed reading.
+  if (config.youtube.cookies) {
+    args.push('--cookies', config.youtube.cookies);
+  }
+
   args.push('--format', config.youtube.format || DEFAULT_FORMAT);
 
-  if (config.youtube.clients) {
-    args.push('--extractor-args', `youtube:player_client=${config.youtube.clients}`);
+  const effectiveClient = client ?? config.youtube.clients;
+  if (effectiveClient) {
+    args.push('--extractor-args', `youtube:player_client=${effectiveClient}`);
   }
   if (config.youtube.extraArgs) {
     // Operator supplied, via the environment - still split into an argv array.
@@ -370,7 +457,7 @@ export function splitArgs(input) {
 
 function runYtDlp(args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(config.youtube.ytDlpPath, args, {
+    const child = spawn(activeYtDlpPath(), args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       shell: false,
@@ -412,9 +499,7 @@ function runYtDlp(args) {
       clearTimeout(timer);
       reject(
         new ResolveError(
-          err.code === 'ENOENT'
-            ? 'yt-dlp is not installed on this server (set YT_DLP_PATH).'
-            : `Could not run yt-dlp: ${err.message}`,
+          err.code === 'ENOENT' ? ytDlpMissingMessage() : `Could not run yt-dlp: ${err.message}`,
           { code: 'YTDLP_MISSING', statusCode: 503 },
         ),
       );
@@ -429,7 +514,7 @@ function runYtDlp(args) {
 }
 
 /** Maps yt-dlp's stderr onto messages that mean something to a human. */
-function translateError(stderr) {
+export function translateError(stderr, stdout) {
   const text = `${stderr}`.toLowerCase();
 
   const rules = [
@@ -440,7 +525,6 @@ function translateError(stderr) {
       'That video is unavailable or has been removed.',
     ],
     [/confirm your age|age-restricted|inappropriate for some users/, 'That video is age-restricted and cannot be streamed here.'],
-    [/not a bot|sign in to confirm/, 'YouTube asked for a sign-in check. Try a different video.'],
     [/not available in your country|blocked it in your country/, 'That video is not available from this server region.'],
     [/copyright/, 'That video was removed for copyright reasons.'],
     [/premieres in|in \d+ (day|hour|minute|second)/, 'That video has not premiered yet.'],
@@ -452,6 +536,23 @@ function translateError(stderr) {
   for (const [re, message] of rules) {
     if (re.test(text)) return new ResolveError(message);
   }
+
+  // Checked after the per-video rules: a private or removed video produces its
+  // own specific message, and only what is left is "YouTube would not talk to
+  // this server at all". The old fallback said "it may be region locked, private
+  // or unsupported", which is a guess that sends people looking for a fault in
+  // their own link when the link is fine and the server's IP address is the
+  // thing being refused.
+  if (looksLikeIpBlock(text)) {
+    return new ResolveError(
+      'YouTube is refusing this server, not the video. It works in a browser, but YouTube '
+        + 'blocks the anonymous player clients on datacenter IP addresses. The server needs a '
+        + 'player client that is accepted there (YT_DLP_CLIENTS), or a signed-in session '
+        + '(YT_DLP_COOKIES).',
+      { code: 'YOUTUBE_BLOCKED_SERVER', statusCode: 503 },
+    );
+  }
+
   if (/ffmpeg|ffprobe/.test(text) && /not found|not installed/.test(text)) {
     return new ResolveError('yt-dlp needs FFmpeg to merge streams, and FFmpeg is missing.', {
       code: 'FFMPEG_MISSING',

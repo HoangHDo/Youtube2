@@ -15,6 +15,7 @@ import {
   degradationReason,
   canResolveYouTube,
 } from '../lib/capabilities.js';
+import { activeYtDlpPath } from '../lib/ytdlp-bootstrap.js';
 
 const log = childLogger({ mod: 'api' });
 
@@ -113,7 +114,7 @@ export function createApiRouter({ version }) {
       degraded: caps.degraded,
       reason: degradationReason(),
       ffmpeg: { ...caps.ffmpeg, path: config.video.ffmpegPath },
-      ytDlp: { ...caps.ytDlp, path: config.youtube.ytDlpPath },
+      ytDlp: { ...caps.ytDlp, path: activeYtDlpPath() },
       sessions: sessionStore.size,
     });
   });

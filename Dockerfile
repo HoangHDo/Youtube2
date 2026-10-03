@@ -76,6 +76,7 @@ ENV NODE_ENV=production \
     LOG_LEVEL=info \
     FFMPEG_PATH=ffmpeg \
     YT_DLP_PATH=/usr/local/bin/yt-dlp \
+    CYBERSTREAM_IMAGE=1 \
     NODE_OPTIONS=--max-old-space-size=768 \
     TMPDIR=/tmp
 

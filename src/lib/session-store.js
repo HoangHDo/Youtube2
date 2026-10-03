@@ -148,6 +148,12 @@ export class Session extends EventEmitter {
       // FFmpeg's dual-file strategy writes its two outputs here, so they are
       // removed with the rest of the session's temp state.
       outputDir: this.tempDir,
+      // A googlevideo link is signed for the address that fetched it. If the
+      // host's egress address differs between the resolve and the fetch, the
+      // link is valid for nobody and FFmpeg is refused with a 403 - a fault no
+      // output strategy can fix. Resolving again from the same process gets a
+      // link signed for the address this connection will actually use.
+      refreshSources: () => this._refreshSources(),
     });
 
     this._wireTranscoder();
@@ -173,8 +179,25 @@ export class Session extends EventEmitter {
     }
   }
 
-  _wireTranscoder() {
-    const t = this.transcoder;
+  /**
+   * Resolve the source again and hand back fresh media links.
+   *
+   * Used once, when FFmpeg is refused the media URL. The old source is released
+   * rather than leaked: it holds a reference in the resolver's shared cache,
+   * and a session that keeps a dead link alive also keeps its cache entry from
+   * being collected.
+   */
+  async _refreshSources() {
+    const previous = this.source;
+    // forceRefresh, not a plain re-resolve: the cached entry holds the exact
+    // URL that was just refused, so returning it would replay the same 403.
+    const fresh = await acquireSource(this.input, { forceRefresh: true });
+    this.source = fresh;
+    previous?.release?.();
+    return fresh.sources;
+  }
+
+  _wireTranscoder() {    const t = this.transcoder;
 
     t.on('video', (chunk) => this._pumpVideo(chunk));
     t.on('audio', (chunk) => this._pumpAudio(chunk));

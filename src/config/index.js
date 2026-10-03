@@ -143,6 +143,10 @@ const schema = z.object({
   YT_DLP_PATH: str('yt-dlp'),
   YT_DLP_EXTRA_ARGS: str(''),
   YT_DLP_CLIENTS: str(''),
+  // Path to a cookies.txt, exported from a signed-in browser session. This is
+  // the reliable way past YouTube's bot check on a datacenter IP, where the
+  // anonymous clients are the ones that get blocked.
+  YT_DLP_COOKIES: str(''),
   YT_DLP_FORMAT: str(''),
   RESOLVE_TTL_MS: duration(15 * 60_000),
   MAX_SOURCE_DURATION: int(0, 86_400, 0),
@@ -228,6 +232,7 @@ export const config = Object.freeze({
     ytDlpPath: env.YT_DLP_PATH,
     extraArgs: env.YT_DLP_EXTRA_ARGS,
     clients: env.YT_DLP_CLIENTS,
+    cookies: env.YT_DLP_COOKIES,
     format: env.YT_DLP_FORMAT,
     resolveTtlMs: env.RESOLVE_TTL_MS,
     maxSourceDuration: env.MAX_SOURCE_DURATION,

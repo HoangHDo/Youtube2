@@ -378,10 +378,13 @@ export class Transcoder extends EventEmitter {
   /**
    * @param {object} opts
    * @param {{muxed?:boolean, video:{url:string,headers?:object}, audio?:{url:string,headers?:object}}|{url:string,headers?:object}} opts.sources
+   * @param {() => Promise<object>} [opts.refreshSources] re-resolve the source;
+   *   used when the signed media link is rejected, which no output strategy can fix
    */
-  constructor({ sources, durationMs = 0, log, sessionId, outputDir, quality = null }) {
+  constructor({ sources, durationMs = 0, log, sessionId, outputDir, quality = null, refreshSources = null }) {
     super();
     this.sources = sources;
+    this.refreshSources = refreshSources;
     this.durationMs = durationMs;
     this.log = log ?? childLogger({ mod: 'ffmpeg' });
     this.sessionId = sessionId;
@@ -418,6 +421,11 @@ export class Transcoder extends EventEmitter {
         : ['multi-pipe', 'dual-file', 'dual-stdout'];
 
     let lastError = null;
+    // At most one fresh link. A URL that is rejected again after being signed
+    // for this very connection is not going to be accepted on a third attempt,
+    // and an unbounded retry would turn a dead video into a hot loop.
+    let refreshAttempted = false;
+
     for (const strategy of order) {
       if (this.stopped) return null;
       try {
@@ -433,6 +441,43 @@ export class Transcoder extends EventEmitter {
       } catch (err) {
         lastError = err;
         this.killProcesses();
+
+        if (err.retryWithFreshSource && !refreshAttempted && this.refreshSources) {
+          refreshAttempted = true;
+          this.log.warn(
+            { sessionId: this.sessionId, err: err.message },
+            'media link was rejected; resolving it again for this connection',
+          );
+          try {
+            const sources = await this.refreshSources();
+            if (this.stopped) return null;
+            this.sources = sources;
+            // The argv were built once in the constructor, so they have to be
+            // rebuilt here or the next attempt would re-fetch the dead URL.
+            this.opts = { sources, durationMs: this.durationMs, video: this.video };
+            this.args = buildFfmpegArgs(this.opts);
+          } catch (refreshErr) {
+            this.log.warn(
+              { sessionId: this.sessionId, err: refreshErr.message },
+              'could not obtain a fresh media link',
+            );
+            throw err;
+          }
+          continue;
+        }
+
+        if (err.retryWithFreshSource) {
+          // The refresh is spent and the new link was refused too. Trying the
+          // remaining output strategies would spawn two more processes and wait
+          // out their timeouts to re-fetch a URL that is known to be bad: the
+          // fault is the link, not the way the outputs are wired.
+          this.log.warn(
+            { strategy, sessionId: this.sessionId, err: err.message },
+            'the media link was refused again after being refreshed',
+          );
+          throw err;
+        }
+
         if (err.retryWithOtherStrategy === false) {
           this.log.warn(
             { strategy, sessionId: this.sessionId, err: err.message },
@@ -692,12 +737,30 @@ export class Transcoder extends EventEmitter {
         { retryWithOtherStrategy: false },
       );
     }
+    if (/Error opening input/i.test(tail) && /\b(403|404)\b|Forbidden/i.test(tail)) {
+      // The signed media URL was rejected. This is worth one fresh resolve and
+      // is not the same fault as a video that cannot be opened at all.
+      //
+      // A googlevideo URL is not a permanent address: it carries the fetching
+      // IP in its `ip`/`ipb` parameters and a signature over it. Resolve and
+      // fetch happen in the same process, but they are separate connections,
+      // and a host whose egress address is not stable - a NAT pool, a proxy, a
+      // redeployed instance behind a shared address - can hand the two
+      // different addresses. The URL is then valid for nobody. Asking yt-dlp
+      // again gets a link signed for the address *this* connection will use.
+      return this._fatal(
+        new Error(
+          `YouTube rejected the media link for this server (403). Retrying with a fresh link.${detail}`,
+        ),
+        { retryWithOtherStrategy: true, retryWithFreshSource: true },
+      );
+    }
+
     if (/Invalid data found|No such filter|Error opening input/i.test(tail)) {
       return this._fatal(new Error(`ffmpeg rejected the source.${detail}`), {
         retryWithOtherStrategy: false,
       });
-    }
-    if (/Connection|timed out|resolve host|HTTP error/i.test(tail)) {
+    }    if (/Connection|timed out|resolve host|HTTP error/i.test(tail)) {
       return this._fatal(new Error(`Could not reach the source.${detail}`), {
         retryWithOtherStrategy: false,
       });
@@ -720,8 +783,12 @@ export class Transcoder extends EventEmitter {
    * Only failures that could plausibly be caused by *how* the outputs are wired
    * up are worth retrying.
    */
-  _fatal(err, { retryWithOtherStrategy }) {
+  _fatal(err, { retryWithOtherStrategy, retryWithFreshSource = false }) {
     err.retryWithOtherStrategy = retryWithOtherStrategy;
+    // Separate from the strategy flag: no output strategy can fix a URL that
+    // was signed for a different IP address, so the loop below needs to know it
+    // must go back to yt-dlp rather than try the next way of writing two files.
+    err.retryWithFreshSource = retryWithFreshSource;
     return err;
   }
 

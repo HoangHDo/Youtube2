@@ -5,6 +5,7 @@
  */
 import { spawn } from 'node:child_process';
 import { config } from '../config/index.js';
+import { activeYtDlpPath } from './ytdlp-bootstrap.js';
 
 /** @returns {Promise<{ok:boolean, version?:string, error?:string}>} */
 export function probeFfmpeg() {
@@ -109,7 +110,7 @@ export function probeYtDlp() {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(config.youtube.ytDlpPath, ['--version'], {
+      child = spawn(activeYtDlpPath(), ['--version'], {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         shell: false,
@@ -125,7 +126,7 @@ export function probeYtDlp() {
     child.on('error', (err) =>
       resolve({
         ok: false,
-        error: err.code === 'ENOENT' ? `"${config.youtube.ytDlpPath}" is not on PATH` : err.message,
+        error: err.code === 'ENOENT' ? `"${activeYtDlpPath()}" is not on PATH` : err.message,
       }),
     );
     child.on('close', (code) =>

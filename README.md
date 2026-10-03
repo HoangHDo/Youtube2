@@ -466,7 +466,7 @@ message.
 │   │   ├── catalog.js            feed / queue / history / saved
 │   │   ├── dom.js, ui.js         helpers, toasts
 │   └── vendor/jsmpeg.min.js      pinned by commit + SHA-256, no CDN
-├── test/                         216 tests, incl. real FFmpeg + real HTTP
+├── test/                         231 tests, incl. real FFmpeg + real HTTP
 ├── scripts/                      setup and diagnostics
 ├── Dockerfile                    multi-stage, non-root, healthcheck
 ├── render.yaml                  Render Blueprint: pins runtime: docker
@@ -500,7 +500,8 @@ readable message instead of surfacing as a mystery later.
 | `MUX_DELAY` | `0.1` | MPEG-TS mux delay, seconds |
 | `AUDIO_BITRATE` | `128k` | |
 | `YT_DLP_PATH` | `yt-dlp` | Point at `./bin/yt-dlp` if vendored |
-| `YT_DLP_CLIENTS` | – | Leave empty; pinning clients goes stale |
+| `YT_DLP_CLIENTS` | – | Leave empty: pinning goes stale, and empty enables the fallback chain. See "YouTube blocking the server" |
+| `YT_DLP_COOKIES` | – | Path to a `cookies.txt`; the reliable fix for a blocked datacenter IP |
 | `YT_DLP_FORMAT` | – | Override the format selector (see below) |
 | `ALLOW_DIRECT_MEDIA_URLS` | `false` | Allow non-YouTube media URLs |
 | `DIRECT_MEDIA_PORTS` | `80,443` | `any` to disable the port allow-list |
@@ -615,6 +616,29 @@ runs the `npm start` script. If you see `npm start`, the image was not used.
 Either deploy via the Blueprint (`render.yaml` in the repo root, "Apply" in the
 dashboard) or set **Runtime → Dockerfile** in the service settings by hand.
 
+Adding `render.yaml` to the repository does **not** convert an existing service:
+Render only reads it when you create a service *from* the Blueprint. If the
+service already exists, the dashboard setting is the only thing that changes it.
+
+#### Escape hatch: `YT_DLP_BOOTSTRAP=1`
+
+If switching the runtime is not possible, yt-dlp also publishes a single
+self-contained Linux executable that needs no Python, so it can be fetched once
+at boot into a cache directory:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `YT_DLP_BOOTSTRAP` | off | `1` enables the download |
+| `YT_DLP_BOOTSTRAP_VERSION` | pinned in `ytdlp-bootstrap.js` | which release to fetch |
+| `YT_DLP_BOOTSTRAP_SHA256` | unset | reject the download unless it hashes to this |
+| `YT_DLP_BOOTSTRAP_DIR` | `<tmp>/cyberstream/bin` | where to cache it |
+
+This **downloads and executes a remote binary**, so it is off by default and a
+bundled image should leave it off. Without a checksum it is trust-on-first-use;
+the digest is logged so it can be pinned after the first run. Everything else
+still applies — the probe, the readiness endpoint and the UI warning all read
+whichever path ends up active.
+
 `healthCheckPath` is `/api/health`, which is a *liveness* probe and deliberately
 returns 200 even when a dependency is missing — a monitor must not restart-loop a
 degraded build, since restarting cannot install anything. Use
@@ -631,6 +655,49 @@ curl -s https://your-host/api/health/ready   # 503 + reason when a dependency is
 `degraded: true` with `canResolveYouTube: false` is the signature of a native
 runtime without yt-dlp. The UI shows the same warning on load, so a user is told
 before they paste a URL instead of concluding their own link is broken.
+
+Note that `ok: true` and `canResolveYouTube: true` only mean the *binary* works.
+They say nothing about whether YouTube will talk to this IP address — see below.
+
+### "Failed to extract any player response" — YouTube blocking the server
+
+With the Dockerfile deployed, the dependencies are present and
+`/api/health/ready` returns 200, yet every YouTube URL still fails:
+
+```
+ERROR: [youtube] aqz-KE-bpKQ: Failed to extract any player response;
+please report this issue on https://github.com/yt-dlp/yt-dlp, ...
+```
+
+This is **not** a broken video and **not** a broken yt-dlp. The same URL resolves
+fine from a laptop. YouTube runs a bot check, and the anonymous InnerTube clients
+are refused from datacenter IP addresses — which is what a Render service is. The
+video plays in a browser; the server is the thing being turned away.
+
+What the app does about it:
+
+* **Retries with other player clients.** When the failure looks like a bot check,
+  resolve is retried against `tv`, `web_safari`, `android_vr` and `tv_simply` —
+  the clients that have historically tolerated anonymous server requests. A
+  private or deleted video is *not* retried, because it will fail identically
+  every time.
+* **Says so.** The user gets "YouTube is refusing this server, not the video"
+  with a `503` and the code `YOUTUBE_BLOCKED_SERVER`, instead of the old
+  "it may be region locked, private or unsupported" — which sends people looking
+  for a fault in a link that is perfectly fine.
+
+If every client is refused, the durable fixes are, in order of reliability:
+
+| Fix | How |
+| --- | --- |
+| Cookies | Export `cookies.txt` from a signed-in browser session, commit it *outside* the repo or bake it into a private image, and set `YT_DLP_COOKIES=/path/to/cookies.txt` |
+| Pin a client | `YT_DLP_CLIENTS=tv` (or `web_safari`, `android_vr`) — disables the fallback chain and uses exactly what you asked for |
+| Residential egress | Run the service somewhere YouTube does not recognise as a datacenter |
+
+The fallback chain is best-effort and cannot be verified from a residential IP,
+because the refusal is specific to the address being blocked. If you can tell
+which client works from your host, set `YT_DLP_CLIENTS` and the app will stop
+guessing.
 
 No `ALLOWED_ORIGINS` is needed: the origin guard always allows a request whose
 `Origin` matches the `Host` it was sent to, so the app works on its own domain, a
@@ -856,8 +923,9 @@ npm run tools:check        # report ffmpeg / yt-dlp availability
 | Symptom | Cause | Fix |
 |---|---|---|
 | `ffmpeg is not usable` at boot | encoder missing | `ffmpeg -encoders \| grep mpeg1video` |
-| `yt-dlp is not installed` | not on PATH | `npm run tools`, set `YT_DLP_PATH` |
+| `yt-dlp is not installed` | not on PATH | check the boot log for `npm start` — if present, the host is not using your Dockerfile. Set **Runtime → Dockerfile**, or enable `YT_DLP_BOOTSTRAP=1` |
 | `Requested format is not available` | YouTube withheld progressive formats | leave `YT_DLP_CLIENTS` empty; the selector has `best` fallbacks |
+| `Failed to extract any player response` | YouTube is bot-checking this server's IP | see "YouTube blocking the server" — the video is fine |
 | Video works, audio silent | autoplay policy | press play on the `<audio>` element; the UI shows `press play` |
 | Blank canvas, no error | the WASM decoder is missing | JSMpeg needs `jsmpeg.wasm`, which upstream does not publish. The app detects this and uses the JS decoder. Do not pass `disableWebAssembly: false` without the file — JSMpeg then waits for it forever and never opens the socket |
 | `403 origin_not_allowed` | origin not allow-listed | add it to `ALLOWED_ORIGINS` |
